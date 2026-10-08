@@ -1,0 +1,23 @@
+# Always-on deployment. `restart: unless-stopped` = the app comes back up on its
+# own after a crash or a server reboot — it no longer depends on anyone's laptop.
+#
+#   docker compose up -d --build      # start (detached), build the image
+#   docker compose logs -f            # watch logs
+#   docker compose down               # stop
+#
+# Data (DB + images) persists in the ./data folder on the host via the volume.
+services:
+  imagetoconfig:
+    build: .
+    image: imagetoconfig:latest
+    container_name: imagetoconfig
+    restart: unless-stopped
+    ports:
+      - "5000:5000"                   # host:container — team reaches http://<server>:5000/
+    volumes:
+      - ./data:/app/data              # keep the database + images on the host
+    environment:
+      # A long, stable secret so logins survive restarts. CHANGE THIS.
+      SECRET_KEY: "change-me-to-a-long-random-string"
+      # Optional AI features — leave unset to run fully offline.
+      # ANTHROPIC_API_KEY: "sk-ant-..."

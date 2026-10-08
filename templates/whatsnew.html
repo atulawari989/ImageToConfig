@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>What's new — ImageToConfig</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">▚</span>
+    <div><h1>What's new</h1><p class="tag">updates since you were last here</p></div>
+  </div>
+  <div class="badges">
+    <span class="badge ok">v{{ app_version }}</span>
+    <a class="badge jump" href="{{ url_for('index') }}">← back to app</a>
+  </div>
+</header>
+
+<section class="card" style="margin:0 28px 20px;">
+  <div class="card-head"><h2>Recent updates</h2>
+    <p>Here's what changed in the app. Dismiss to clear the “updates available” badge.</p></div>
+  <div style="padding:6px 22px 20px;">
+    {% for e in entries %}
+    <div class="wn-entry">
+      <div class="wn-head">
+        <span class="tpl-learned">v{{ e.version }}</span>
+        <span class="wn-title">{{ e.title }}</span>
+        <span class="wn-date">{{ e.date }}</span>
+      </div>
+      <ul class="wn-list">
+        {% for it in e['items'] %}<li>{{ it }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+    <form action="{{ url_for('whatsnew_dismiss') }}" method="post" style="margin-top:14px;">
+      <button type="submit" class="primary">Got it — dismiss</button>
+    </form>
+  </div>
+</section>
+</body>
+</html>

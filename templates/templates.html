@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Format Templates — ImageToConfig</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ css_v }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">▚</span>
+    <div>
+      <h1>Format Templates</h1>
+      <p class="tag">what each output file the app creates looks like</p>
+    </div>
+  </div>
+  <div class="badges">
+    <span class="badge">{{ templates|length }} formats</span>
+    <a class="badge jump" href="{{ url_for('index') }}">← back to app</a>
+  </div>
+</header>
+
+<p class="howto">
+  <b>Reference:</b> below is a live template of every file type ImageToConfig can generate —
+  the built-in <code>.3xml</code>, <code>.LBXxml</code>, <code>.78tml</code>, and
+  <code>.oxz</code>, plus any formats it has <b>learned</b> from files you imported.
+  Each template is generated from a sample <em>1&nbsp;check&nbsp;+&nbsp;1&nbsp;statement</em>
+  transaction. Real files embed the page image as base64 TIFF inside each
+  <code>&lt;image&gt;</code> element — omitted here so you can read the structure.
+</p>
+
+<section class="card tpl-card" style="margin: 0 28px 18px;">
+  <div class="card-head tpl-head">
+    <h2><span class="tpl-name mono">Transaction types</span>
+        <span class="tpl-kind">{{ txn_types|length }} types</span></h2>
+    <p>What each transaction (work) type allows and how documents group per transaction.
+       A <span class="tpl-learned">confirmed</span> tag means the rule was learned from a real
+       imported sample; others are best-effort defaults. Import a <code>.3xml</code> of a given
+       type on the main page and its rule is analysed, saved, and updated here automatically.</p>
+  </div>
+  <div style="overflow-x:auto;">
+  <table class="hist" style="margin:0;">
+    <thead><tr><th>Transaction type</th><th>Allowed documents</th><th>Per transaction</th><th>Source</th></tr></thead>
+    <tbody>
+      {% for t in txn_types %}
+      <tr>
+        <td class="mono">{{ t.name }}</td>
+        <td>{{ t.allowed }}</td>
+        <td>{{ t.group }}</td>
+        <td>{% if t.confirmed %}<span class="tpl-learned">confirmed</span>{% else %}<span class="tpl-kind">best-effort</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<div class="tpl-list">
+  {% for t in templates %}
+  <section class="card tpl-card">
+    <div class="card-head tpl-head">
+      <h2>
+        <span class="tpl-name mono">{{ t.name }}</span>
+        <span class="tpl-kind">{{ t.kind }}</span>
+        {% if not t.builtin %}<span class="tpl-learned">learned</span>{% endif %}
+      </h2>
+      <p>{{ t.desc }}</p>
+    </div>
+    <pre class="tpl-body mono">{{ t.content }}</pre>
+  </section>
+  {% endfor %}
+</div>
+
+<footer>
+  <p>ImageToConfig · format reference. Import a new batch/config file on the main page and its
+     format is learned, saved, and appears here automatically.</p>
+</footer>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Check-List files — ImageToConfig</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ css_v }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">☑</span>
+    <div>
+      <h1>Check-List files</h1>
+      <p class="tag">saved Check-List (.3xml) batch files, kept for reuse</p>
+    </div>
+  </div>
+  <div class="badges">
+    <span class="badge">{{ files|length }} saved</span>
+    <a class="badge jump" href="{{ url_for('cl.index') }}" title="Standalone workspace to compose &amp; generate Check-List batches">☑ Check-List workspace</a>
+    <a class="badge jump" href="{{ url_for('index') }}">← back to app</a>
+  </div>
+</header>
+
+{% with msgs = get_flashed_messages(with_categories=true) %}
+  {% if msgs %}
+  <div class="flash-wrap">
+    {% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}
+  </div>
+  {% endif %}
+{% endwith %}
+
+<p class="howto">
+  <b>What this is:</b> Check-List files are <code>.3xml</code> files, but they're a distinct kind
+  (transactionType <code>Check-List</code>: multiple documents per transaction). This section keeps
+  every Check-List file you import or upload here <b>whole</b>, so you can reuse a known-good file
+  instead of recreating one and getting it wrong. Files are validated on the way in — anything that
+  isn't a real Check-List file is rejected.
+</p>
+
+<section class="card" style="margin: 0 28px 18px;">
+  <div class="card-head">
+    <h2>Add a Check-List file</h2>
+    <p>Upload a Check-List <code>.3xml</code> to save it here. (Files you import on the main page are
+       also saved here automatically.)</p>
+  </div>
+  <form action="{{ url_for('checklist_upload') }}" method="post" enctype="multipart/form-data"
+        class="cl-upload">
+    <input type="file" name="file" accept=".3xml,.xml,.78tml,text/xml" required>
+    <input type="text" name="note" placeholder="optional note (e.g. 'DataCard OBD, 5 txns')" class="cl-note">
+    <button type="submit" class="primary">⤒ Save file</button>
+  </form>
+</section>
+
+<section class="card" style="margin: 0 28px 28px;">
+  <div class="card-head">
+    <h2>Saved Check-List files</h2>
+  </div>
+  {% if files %}
+  <div style="overflow-x:auto;">
+  <table class="hist">
+    <thead>
+      <tr><th>File</th><th>Structure</th><th>Size</th><th>Saved</th><th>Note</th><th class="cl-actions-h">Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for rf in files %}
+      <tr>
+        <td class="mono">{{ rf.filename }}</td>
+        <td>{{ rf.txn_count }} txn · {{ rf.doc_count }} doc(s)</td>
+        <td>{{ '%.1f'|format(rf.size / 1024) }} KB</td>
+        <td>{{ rf.updated_at or rf.created_at }}</td>
+        <td>
+          <form action="{{ url_for('checklist_update', rid=rf.id) }}" method="post" class="cl-note-form">
+            <input type="text" name="note" value="{{ rf.note or '' }}" placeholder="add a note…" class="cl-note">
+            <button type="submit" class="mini">Save note</button>
+          </form>
+        </td>
+        <td class="cl-actions">
+          <a class="mini" href="{{ url_for('checklist_download', rid=rf.id) }}">⤓ Download</a>
+          <form action="{{ url_for('checklist_load', rid=rf.id) }}" method="post" class="inline"
+                onsubmit="return confirm('Extract the images from this file into the library?')">
+            <button type="submit" class="mini" title="Pull this file's images into the library to compose a new batch">↥ Load images</button>
+          </form>
+          <form action="{{ url_for('checklist_update', rid=rf.id) }}" method="post"
+                enctype="multipart/form-data" class="inline cl-replace">
+            <label class="mini cl-replace-label" title="Replace this file with an updated Check-List file">
+              ↻ Replace<input type="file" name="file" accept=".3xml,.xml,.78tml,text/xml"
+                              onchange="if(this.files.length){ this.form.submit(); }">
+            </label>
+          </form>
+          <form action="{{ url_for('checklist_delete', rid=rf.id) }}" method="post" class="inline"
+                onsubmit="return confirm('Delete this saved Check-List file?')">
+            <button type="submit" class="mini del">🗑 Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="empty">No Check-List files saved yet. Upload one above, or import a Check-List
+     <code>.3xml</code> on the main page and it will appear here automatically.</p>
+  {% endif %}
+</section>
+
+<footer>
+  <p>ImageToConfig · Check-List files are validated (transactionType must be <code>Check-List</code>)
+     so only the right files are saved here.</p>
+</footer>
+</body>
+</html>

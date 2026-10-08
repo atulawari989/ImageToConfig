@@ -1,0 +1,937 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Check-List — ImageToConfig</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ css_v }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">☑</span>
+    <div>
+      <h1>Check-List</h1>
+      <p class="tag">standalone workspace · its own image pool, plan &amp; batch history</p>
+    </div>
+  </div>
+  <div class="badges">
+    <span class="badge {{ 'ok' if tesseract_ok else 'warn' }}">
+      OCR: {{ 'Tesseract ready' if tesseract_ok else 'manual' }}
+    </span>
+    <span class="badge {{ 'ok' if ai_status[0] == 'on' else 'warn' }}" title="Claude (Anthropic) integration">
+      {{ ai_status[1] }}
+    </span>
+    <span class="badge">{{ images|length }} unique images</span>
+    <a class="badge jump" href="{{ url_for('checklist') }}" title="Archived whole Check-List .3xml files, kept for reuse">⤓ archived files</a>
+    <a class="badge jump" href="{{ url_for('index') }}" title="Main app (unrelated pool — nothing here is shared)">← main app</a>
+    <a class="badge jump" href="#library">↓ library</a>
+    {% if current_user %}
+    <span class="badge" title="Signed in">👤 {{ current_user.username }}</span>
+    {% endif %}
+  </div>
+</header>
+
+<p class="howto">
+  <b>This page is a separate workspace just for Check-List batches</b> — its own image pool
+  (only check / stub / statement / full-page documents are accepted here), its own plan, its
+  own generated-batch history. Nothing here affects the main app's library or batches.
+  ① <a href="#library">Upload</a> images or import a Check-List <code>.3xml</code> ·
+  ② <b>compose</b> the transactions · ③ <b>generate</b>.
+</p>
+
+{% with msgs = get_flashed_messages(with_categories=true) %}
+  {% if msgs %}
+  <div class="flash-wrap">
+    {% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}
+  </div>
+  {% endif %}
+{% endwith %}
+
+<!-- ============================ 1. BUILD BATCH ============================ -->
+<section class="card build-card">
+  <div class="card-head">
+    <h2><span class="num">1</span> Build a Check-List batch</h2>
+    <p>Compose the transactions, review the plan, then generate. Batch type is fixed to <b>Check-List</b>.</p>
+  </div>
+
+  <!-- config -->
+  <form class="batch-config" id="configForm" action="{{ url_for('cl.generate') }}" method="post">
+    <input type="hidden" name="batch_type" value="{{ batch_type }}">
+    <div class="cfg-grid">
+      <label>Biller / business unit <input name="biller" value="{{ cfg.get('biller', 'SANITY_LBX_05 LBX') }}"></label>
+      <label>Site <input name="site" value="{{ cfg.get('site', 'Worldwide') }}"></label>
+      <label>Process date <input name="batch_date" value="{{ cfg.get('batch_date', today) }}"></label>
+      <label>File date <input name="file_date" value="{{ cfg.get('file_date', '') }}" placeholder="auto (now) — or YYYY/MM/DD"></label>
+      <label>Lockbox # <input name="lockbox" value="{{ cfg.get('lockbox', '') }}" placeholder="optional (e.g. 678245)"></label>
+      <label>Subsite <input name="subsite" value="{{ cfg.get('subsite', '') }}" placeholder="optional (e.g. New York)"></label>
+      <label>Operator <input name="operator" value="{{ cfg.get('operator', 'QA Operator') }}"></label>
+      <label class="chk"><input type="checkbox" name="test_file" {{ 'checked' if cfg.get('test_file', 'Y') == 'Y' }}> testFile = Y</label>
+      <label class="chk"><input type="checkbox" name="control_totals" {{ 'checked' if cfg.get('control_totals', true) }}> control totals</label>
+    </div>
+    <p class="rule-hint {{ 'confirmed' if rule.confirmed else 'besteffort' }}">
+      {{ '✓ ' if rule.confirmed else '≈ ' }}{{ rule.desc }}{% if not rule.confirmed %} <span class="best-effort">(best-effort — no sample)</span>{% endif %}
+    </p>
+  </form>
+
+  <!-- compose -->
+  <form class="compose" id="composeForm" action="{{ url_for('cl.plan_compose') }}" method="post">
+    <div class="compose-head">Compose transactions
+      <span class="pool">library has {{ pool_counts.check }} check · {{ pool_counts.statement }} statement ·
+        {{ pool_counts.fullpage }} full-page · {{ pool_counts.stub }} stub</span>
+    </div>
+    <input type="hidden" name="uniform" id="uniformField" value="1">
+    <div class="compose-top">
+      <label>How many transactions?<input type="number" name="n_transactions" id="nTxn" min="0" value="{{ compose_cfg.get('n_transactions', 0) }}" oninput="renderComposeRows()"></label>
+      <label class="perTxn-toggle" title="Give each transaction its own document mix">
+        <input type="checkbox" id="perTxnToggle" onchange="renderComposeRows()"
+               {{ 'checked' if compose_cfg.get('uniform') == false }}>
+        Different mix per transaction
+      </label>
+      <button type="submit" class="build-btn">Build plan</button>
+    </div>
+    <div id="composeRows" class="compose-rows"></div>
+    <p class="compose-note"><b>Build plan</b> creates the transactions from the mix above — it does <b>not</b> auto-pick images. After building, select images from the <a href="#library">library</a> and add them into each transaction.</p>
+  </form>
+
+  <!-- plan (grouped by transaction) -->
+  {% if plan_txns %}
+  <div class="plan-wrap">
+    {% for t in plan_txns %}
+    <div class="txn">
+      <div class="txn-head">
+        <span class="txn-title">Transaction {{ t.ti + 1 }}</span>
+        <span class="txn-count">{{ t.docs|length }} unique · {{ t.total }} doc(s) · ${{ t.amount }}{% if t.target %} · <span class="txn-target" title="target mix for this transaction">target: {{ t.target }}</span>{% endif %}</span>
+        <span class="txn-tools">
+          <form action="{{ url_for('cl.plan_move_txn') }}" method="post" class="inline">
+            <input type="hidden" name="ti" value="{{ t.ti }}"><input type="hidden" name="delta" value="-1">
+            <button class="mini" type="submit" title="move up">↑</button></form>
+          <form action="{{ url_for('cl.plan_move_txn') }}" method="post" class="inline">
+            <input type="hidden" name="ti" value="{{ t.ti }}"><input type="hidden" name="delta" value="1">
+            <button class="mini" type="submit" title="move down">↓</button></form>
+          <form action="{{ url_for('cl.plan_multiply_txn') }}" method="post" class="inline" title="repeat this transaction N times (volume)">
+            <input type="hidden" name="ti" value="{{ t.ti }}">
+            <input class="mono xs" type="number" name="total" min="0" value="1">
+            <button class="mini" type="submit">×N</button></form>
+          <form action="{{ url_for('cl.plan_remove_txn') }}" method="post" class="inline">
+            <input type="hidden" name="ti" value="{{ t.ti }}">
+            <button class="mini del" type="submit" title="remove transaction">✕</button></form>
+        </span>
+      </div>
+      <table class="txn-items">
+        <thead>
+          <tr><th>Image</th><th>ID</th><th>Type</th><th>Amount</th><th>Qty (×N)</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for it in t.docs %}
+          <tr>
+            <td class="thumb sm">
+              {% if it.image %}<img src="{{ url_for('cl.preview', image_id=it.image.id, side='front') }}?v={{ it.image.front_v }}" alt=""
+                    onclick="openViewer({{ it.image.id }}, 'front', {{ 'true' if it.image.back_path else 'false' }})">
+              {% else %}<span class="missing">missing</span>{% endif %}
+            </td>
+            <td class="mono">#{{ it.entry.image_id }}</td>
+            <td>
+              <form action="{{ url_for('cl.plan_group_set') }}" method="post" class="inline grp" id="g{{ t.ti }}-{{ loop.index }}">
+                <input type="hidden" name="ti" value="{{ t.ti }}">
+                <input type="hidden" name="image_id" value="{{ it.entry.image_id }}">
+                <input type="hidden" name="o_type" value="{{ it.entry.item_type }}">
+                <input type="hidden" name="o_amount" value="{{ it.entry.amount }}">
+                <select name="item_type" onchange="this.form.submit()">
+                  {% for ty in item_types %}
+                  <option value="{{ ty }}" {{ 'selected' if ty == it.entry.item_type }}>{{ item_type_labels.get(ty, ty) }}</option>
+                  {% endfor %}
+                </select>
+            </td>
+            <td>$<input class="mono xs" name="amount" value="{{ it.entry.amount }}" onchange="this.form.submit()"></td>
+            <td>
+              <input class="mono xs" type="number" name="qty" min="0" value="{{ it.count }}"
+                     title="how many copies of this image in the transaction" onchange="this.form.submit()">
+              <span class="qty-badge">×{{ it.count }}</span></form>
+            </td>
+            <td class="rowtools">
+              <form action="{{ url_for('cl.plan_move_item') }}" method="post" class="inline">
+                <input type="hidden" name="ti" value="{{ t.ti }}">
+                <input type="hidden" name="image_id" value="{{ it.entry.image_id }}">
+                <input type="hidden" name="o_type" value="{{ it.entry.item_type }}">
+                <input type="hidden" name="o_amount" value="{{ it.entry.amount }}">
+                <input type="hidden" name="delta" value="-1">
+                <button class="mini" type="submit" title="move up">↑</button></form>
+              <form action="{{ url_for('cl.plan_move_item') }}" method="post" class="inline">
+                <input type="hidden" name="ti" value="{{ t.ti }}">
+                <input type="hidden" name="image_id" value="{{ it.entry.image_id }}">
+                <input type="hidden" name="o_type" value="{{ it.entry.item_type }}">
+                <input type="hidden" name="o_amount" value="{{ it.entry.amount }}">
+                <input type="hidden" name="delta" value="1">
+                <button class="mini" type="submit" title="move down">↓</button></form>
+              <form action="{{ url_for('cl.plan_group_set') }}" method="post" class="inline">
+                <input type="hidden" name="ti" value="{{ t.ti }}">
+                <input type="hidden" name="image_id" value="{{ it.entry.image_id }}">
+                <input type="hidden" name="o_type" value="{{ it.entry.item_type }}">
+                <input type="hidden" name="o_amount" value="{{ it.entry.amount }}">
+                <input type="hidden" name="qty" value="0">
+                <button class="mini del" type="submit" title="remove this document">✕</button></form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <div class="txn-add">
+        <form action="{{ url_for('cl.plan_add_to_txn') }}" method="post" class="inline">
+          <input type="hidden" name="ti" value="{{ t.ti }}">
+          <span class="rl">＋ add to this transaction:</span>
+          <select name="image_id">
+            {% for im in images %}
+            <option value="{{ im.id }}">#{{ im.id }} · {{ im.item_type }}{% if im.raw_micr %} · {{ im.raw_micr[:14] }}{% endif %}</option>
+            {% endfor %}
+          </select>
+          <input class="mono xs" type="number" name="qty" min="1" value="1" title="how many copies">
+          <button class="mini add" type="submit">add</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="plan-actions">
+    <select name="format" form="configForm" id="genFormat" class="fmt-select">
+      <option value="3xml" {{ 'selected' if cfg.get('format') == '3xml' }}>.3xml</option>
+      <option value="lbxxml" {{ 'selected' if cfg.get('format') == 'lbxxml' }}>.LBXxml</option>
+      <option value="78tml" {{ 'selected' if cfg.get('format') == '78tml' }}>.78tml</option>
+      <option value="oxz" {{ 'selected' if cfg.get('format') == 'oxz' }}>.oxz (scanner batch)</option>
+      {% for rf in registered_formats %}
+      <option value="{{ rf.ext }}" {{ 'selected' if cfg.get('format') == rf.ext }}>.{{ rf.ext }} (like .{{ rf.base }})</option>
+      {% endfor %}
+      <option value="bundle" {{ 'selected' if cfg.get('format') == 'bundle' }}>All + bundle</option>
+    </select>
+    <button class="primary" type="submit" form="configForm">⤓ Generate</button>
+    <span class="plan-count">{{ plan_txns|length }}{% if txn_cap %} of {{ txn_cap }}{% endif %} transaction(s) · {{ plan_count }} document(s) · <b>total ${{ plan_total }}</b></span>
+    {% if txn_cap and plan_txns|length >= txn_cap %}
+    <button class="mini" type="button" disabled
+            title="This plan is fixed to {{ txn_cap }} transaction(s). Remove one, or rebuild the plan with a higher count.">＋ New transaction</button>
+    {% else %}
+    <form action="{{ url_for('cl.plan_new_txn') }}" method="post" class="inline">
+      <button class="mini" type="submit">＋ New transaction</button>
+    </form>
+    {% endif %}
+    <form action="{{ url_for('cl.plan_clear') }}" method="post" class="inline">
+      <button class="ghost" type="submit">Clear plan</button>
+    </form>
+  </div>
+  {% else %}
+  <p class="empty">No plan yet. Set how many transactions in <b>Compose transactions</b> above and press
+     <b>Build plan</b> to create them — then select images from the
+     <a href="#library">library</a> and add them into each transaction.</p>
+  <div class="plan-actions">
+    <button class="mini" type="button" disabled
+            title="Build a plan first — use Compose transactions → Build plan">＋ New transaction</button>
+    <span class="plan-count">build a plan to enable “＋ New transaction”</span>
+  </div>
+  {% endif %}
+</section>
+
+<!-- ============================ 2. HISTORY ============================ -->
+<section class="card batch-card">
+  <div class="card-head">
+    <h2><span class="num">2</span> Generated Check-List batches</h2>
+    <p>History of generated output from this workspace. Click a card to expand details, then download or view in-browser.</p>
+  </div>
+  {% if batches %}
+  <div class="batch-grid" id="batchGrid">
+    {% for b in batches %}
+    <div class="bcard" id="bcard-{{ b.id }}" onclick="toggleBatch({{ b.id }}, event)">
+      <div class="bcard-top">
+        <span class="bid mono" title="batch #{{ b.id }} (internal id)">#{{ batches|length - loop.index0 }}</span>
+        <span class="btype-badge">{{ b.batch_type }}</span>
+        {% if b.test_file == 'Y' %}<span class="btest-badge">TEST</span>{% endif %}
+        <span class="bdate mono">{{ b.created_at[:16] }}</span>
+        <button class="bcard-expand-btn" type="button" aria-label="expand"
+                onclick="event.stopPropagation(); toggleBatch({{ b.id }})">▾</button>
+      </div>
+      <div class="bcard-summary">
+        <span class="binfo" title="Biller">{{ b.biller or '—' }}</span>
+        <span class="bsep">·</span>
+        <span class="binfo muted" title="Site">{{ b.site or '—' }}</span>
+        {% if b.lockbox %}<span class="bsep">·</span><span class="binfo muted mono" title="Lockbox">LBX {{ b.lockbox }}</span>{% endif %}
+        <span class="bsep">·</span>
+        <span class="binfo mono" title="Items">{{ b.item_count }} item{{ 's' if b.item_count != 1 }}</span>
+      </div>
+      <div class="bcard-pills">
+        {% if b.xml3_path %}
+        <a class="bpill" href="{{ url_for('cl.download', batch_id=b.id, kind='3xml') }}" onclick="event.stopPropagation()" title="Download .3xml">⤓ .3xml</a>
+        <a class="bpill view" href="{{ url_for('cl.view_file', batch_id=b.id, kind='3xml') }}" onclick="event.stopPropagation()" title="View in browser">👁</a>
+        {% endif %}
+        {% if b.lbxxml_path %}
+        <a class="bpill" href="{{ url_for('cl.download', batch_id=b.id, kind='lbxxml') }}" onclick="event.stopPropagation()" title="Download .LBXxml">⤓ .LBXxml</a>
+        <a class="bpill view" href="{{ url_for('cl.view_file', batch_id=b.id, kind='lbxxml') }}" onclick="event.stopPropagation()" title="View in browser">👁</a>
+        {% endif %}
+        {% if b.tml78_path %}
+        <a class="bpill" href="{{ url_for('cl.download', batch_id=b.id, kind='78tml') }}" onclick="event.stopPropagation()" title="Download .78tml">⤓ .78tml</a>
+        <a class="bpill view" href="{{ url_for('cl.view_file', batch_id=b.id, kind='78tml') }}" onclick="event.stopPropagation()" title="View in browser">👁</a>
+        {% endif %}
+        {% if b.oxz_path %}
+        <a class="bpill bundle" href="{{ url_for('cl.download', batch_id=b.id, kind='oxz') }}" onclick="event.stopPropagation()" title="Download .oxz scanner batch">⤓ .oxz</a>
+        {% endif %}
+        {% if b.custom_path %}
+        <a class="bpill" href="{{ url_for('cl.download', batch_id=b.id, kind=b.custom_ext) }}" onclick="event.stopPropagation()" title="Download .{{ b.custom_ext }}">⤓ .{{ b.custom_ext }}</a>
+        <a class="bpill view" href="{{ url_for('cl.view_file', batch_id=b.id, kind=b.custom_ext) }}" onclick="event.stopPropagation()" title="View in browser">👁</a>
+        {% endif %}
+        {% if b.bundle_path %}
+        <a class="bpill bundle" href="{{ url_for('cl.download', batch_id=b.id, kind='bundle') }}" onclick="event.stopPropagation()" title="Download bundle">⤓ bundle.zip</a>
+        {% endif %}
+        {% if not b.xml3_path and not b.lbxxml_path and not b.tml78_path and not b.custom_path and not b.bundle_path and not b.oxz_path %}
+        <span class="bpill-none">no files</span>
+        {% endif %}
+      </div>
+      <div class="bcard-detail" id="bdetail-{{ b.id }}" hidden>
+        <div class="bdetail-grid">
+          <div><span class="blabel">Biller</span><span class="bval">{{ b.biller or '—' }}</span></div>
+          <div><span class="blabel">Site</span><span class="bval">{{ b.site or '—' }}</span></div>
+          <div><span class="blabel">Lockbox</span><span class="bval mono">{{ b.lockbox or '—' }}</span></div>
+          <div><span class="blabel">Batch date</span><span class="bval mono">{{ b.batch_date or '—' }}</span></div>
+          <div><span class="blabel">Items</span><span class="bval mono">{{ b.item_count }}</span></div>
+          <div><span class="blabel">Test file</span><span class="bval mono">{{ b.test_file }}</span></div>
+          <div class="bdetail-wide"><span class="blabel">Control totals</span><span class="bval mono">{{ b.control_total or '—' }}</span></div>
+          <div class="bdetail-wide"><span class="blabel">Generated</span><span class="bval mono">{{ b.created_at }}</span></div>
+        </div>
+        <div class="bdetail-actions">
+          <button class="mini aireview" type="button"
+                  onclick="event.stopPropagation(); aiReview({{ b.id }}, this)">✨ AI review</button>
+          <form action="{{ url_for('cl.discard_batch', batch_id=b.id) }}" method="post" class="inline"
+                onsubmit="return discardBatch(this, {{ b.id }})">
+            <button class="mini del" type="submit" onclick="event.stopPropagation()">Discard batch</button>
+          </form>
+        </div>
+        <div class="ai-review" id="aireview-{{ b.id }}" hidden></div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No batches generated yet.</p>
+  {% endif %}
+</section>
+
+<!-- ============================ 3. LIBRARY (gallery) ============================ -->
+<section class="card" id="library">
+  <div class="card-head">
+    <h2><span class="num">3</span> Check-List image library</h2>
+    <p>Separate pool from the main app — only check / stub / statement / full-page documents
+       are accepted here. Exact <em>and</em> near-duplicate scans are removed on upload.</p>
+  </div>
+
+  <div class="uploaders">
+    <form class="uploader" action="{{ url_for('cl.upload') }}" method="post" enctype="multipart/form-data">
+      <label class="ul-title">Upload images</label>
+      <input type="file" name="images" multiple accept="image/*,.tif,.tiff">
+      <label class="ul-title" style="margin-top:6px;">Document type (optional — used if auto-detect can't tell)</label>
+      <select name="item_type">
+        <option value="">auto-detect</option>
+        {% for t in item_types %}<option value="{{ t }}">{{ item_type_labels.get(t, t) }}</option>{% endfor %}
+      </select>
+      <button type="submit">Add to library</button>
+      <span class="hint">checks, stubs, statements, full-page docs only — anything else is rejected</span>
+    </form>
+    <form class="uploader" action="{{ url_for('cl.import_file') }}" method="post" enctype="multipart/form-data">
+      <label class="ul-title">Import Check-List file (.3xml)</label>
+      <input type="file" name="file" accept=".3xml,.xml,text/xml">
+      <button type="submit">Unpack &amp; ingest</button>
+      <span class="hint">only files whose transactionType is Check-List are accepted</span>
+    </form>
+  </div>
+
+  {% if images %}
+  <div class="gallery-bar">
+    <div class="gbar-left">
+      <label class="filter">Filter type
+        <select id="typeFilter" onchange="filterGallery()">
+          <option value="">all ({{ images|length }})</option>
+          {% for t in item_types %}<option value="{{ t }}">{{ item_type_labels.get(t, t) }}</option>{% endfor %}
+        </select>
+      </label>
+      <button type="button" class="mini" onclick="selectAllVisible(true)">Select all</button>
+      <button type="button" class="mini" onclick="selectAllVisible(false)">Clear</button>
+      <span class="sel-count" id="selCount">0 selected</span>
+      <form action="{{ url_for('cl.library_dedup') }}" method="post" class="inline"
+            onsubmit="return confirm('Remove near-duplicate images from the library (keep one of each)?')">
+        <button type="submit" class="mini">⌫ Remove duplicates</button>
+      </form>
+      <button type="button" class="mini aifill" onclick="aiFillMicr(this)"
+              title="Use Claude vision to read + save the MICR for every check missing one">✨ AI-fill missing MICR</button>
+      <button type="button" class="mini aifill" onclick="aiFillAmounts(this)"
+              title="Use Claude vision to read + save the dollar amount for every check missing one">✨ AI-fill amounts</button>
+      <span class="ai-fill-msg" id="aiFillMsg"></span>
+    </div>
+    <form action="{{ url_for('cl.plan_add_many') }}" method="post" id="bulkForm" onsubmit="syncTargets()">
+      <label class="into-label">into
+        <select id="targetTxn" onchange="syncTargets()" title="which transaction to add into">
+          {% if plan_txns %}
+          <option value="auto" {{ 'selected' if txn_cap and plan_txns|length >= txn_cap }}>▸ Distribute across transactions (auto)</option>
+          {% endif %}
+          {% if txn_cap and plan_txns|length >= txn_cap %}
+          <option value="" disabled>＋ New transaction (plan is full)</option>
+          {% else %}
+          <option value="">＋ New transaction (one each)</option>
+          {% endif %}
+          {% for t in plan_txns %}
+          <option value="{{ t.ti }}">Transaction {{ t.ti + 1 }} ({{ t.total }} doc)</option>
+          {% endfor %}
+        </select>
+      </label>
+      <input type="hidden" name="target_ti" class="target-ti" value="">
+      <button class="primary sm" type="submit">+ Add selected to batch ↑</button>
+    </form>
+  </div>
+
+  <div class="gallery">
+    {% for im in images %}
+      <div class="gcard" data-type="{{ im.item_type }}">
+        <div class="gthumb">
+          <img data-imgid="{{ im.id }}" data-side="front"
+               src="{{ url_for('cl.preview', image_id=im.id, side='front') }}?v={{ im.front_v }}" alt="front" loading="lazy"
+               onclick="openViewer({{ im.id }}, this.dataset.side, {{ 'true' if im.back_path else 'false' }})" title="click to enlarge">
+          <label class="pick" title="select for batch">
+            <input type="checkbox" name="image_id" value="{{ im.id }}" form="bulkForm" onchange="updateSelCount()">
+          </label>
+          <span class="tbadge {{ im.item_type }}" data-imgid="{{ im.id }}">{{ im.item_type }}</span>
+          {% if im.back_path %}<span class="side-label" data-imgid="{{ im.id }}">FRONT</span>
+          <button class="flipbtn" type="button" data-imgid="{{ im.id }}"
+                onclick="flipSide({{ im.id }})" title="switch to other side">⇄</button>
+          {% else %}<button class="flipbtn addback" type="button" data-imgid="{{ im.id }}"
+                onclick="toggleSide({{ im.id }})" title="add a back image to view both sides">＋ back</button>{% endif %}
+          <span class="rotate-ovl">
+            <button class="rot" type="button" title="rotate left" onclick="rotateImg({{ im.id }},'left')">↺</button>
+            <button class="rot" type="button" title="rotate right" onclick="rotateImg({{ im.id }},'right')">↻</button>
+          </span>
+        </div>
+        <div class="gbody">
+          <div class="grow">
+            <span class="gid mono">#{{ im.id }}</span>
+            <span class="src {{ im.source }}">{{ im.source }}</span>
+          </div>
+          <div class="gscan mono {{ 'missing' if (im.item_type == 'check' and not im.raw_micr) }}"
+               data-imgid="{{ im.id }}" title="{{ im.raw_micr or 'no MICR / scanline' }}">
+            {% if im.raw_micr %}{{ im.raw_micr }}{% elif im.item_type == 'check' %}⚠ no MICR — Edit to add{% else %}—{% endif %}
+          </div>
+          <div class="gactions">
+            <form action="{{ url_for('cl.plan_add') }}" method="post" class="inline">
+              <input type="hidden" name="image_id" value="{{ im.id }}">
+              <input type="hidden" name="target_ti" class="target-ti" value="">
+              <button class="mini add" type="submit">+ Batch</button>
+            </form>
+            <button class="mini" type="button" onclick="toggleEdit({{ im.id }})">Edit</button>
+            <button class="mini" type="button" onclick="toggleSide({{ im.id }})"
+                    title="add a back (or replace front) image and club both sides into this item">＋ Side</button>
+            <form action="{{ url_for('cl.delete_image', image_id=im.id) }}" method="post" class="inline"
+                  onsubmit="return confirm('Delete image #{{ im.id }} from the library?')">
+              <button class="mini del" type="submit">Delete</button>
+            </form>
+          </div>
+        </div>
+        <div class="side-panel" id="side-{{ im.id }}" hidden>
+          {% if im.back_path %}
+          <form action="{{ url_for('cl.swap_sides', image_id=im.id) }}" method="post" class="swap-row"
+                onsubmit="return swapSides(this, {{ im.id }})">
+            <button class="mini swap-btn" type="submit"
+                    title="swap which stored image is the front vs the back">⇄ Swap front / back</button>
+            <span class="side-hint">use this if the two sides came in reversed</span>
+          </form>
+          {% endif %}
+          <form action="{{ url_for('cl.attach_side', image_id=im.id) }}" method="post"
+                enctype="multipart/form-data" onsubmit="return attachSide(this, {{ im.id }})">
+            <label>Add / replace a side with a file
+              <select name="side">
+                <option value="back">Back (front stays as-is)</option>
+                <option value="front">Front (replaces current front)</option>
+              </select>
+            </label>
+            <label>Image file
+              <input type="file" name="side_image" accept="image/*,.tif,.tiff" required>
+            </label>
+            <button class="mini attach-btn" type="submit">Attach &amp; club</button>
+            <span class="side-hint">both sides are kept in one item — use ⇄ to flip</span>
+          </form>
+        </div>
+        <div class="edit-panel" id="edit-{{ im.id }}" hidden>
+          <form action="{{ url_for('cl.edit_image', image_id=im.id) }}" method="post"
+                onsubmit="return saveEdit(this, {{ im.id }})">
+            <label>Document type
+              <select name="item_type">
+                {% for t in item_types %}
+                <option value="{{ t }}" {{ 'selected' if t == im.item_type }}>{{ item_type_labels.get(t, t) }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Scanline (MICR / Dataline) — optional
+              <input class="mono" name="raw_micr" data-imgid="{{ im.id }}" value="{{ im.raw_micr or '' }}"
+                     placeholder="blank = empty / null in output">
+            </label>
+            <button class="mini rrmicr" type="button" onclick="rereadMicr({{ im.id }}, this)">↻ Re-read MICR (Tesseract)</button>
+            <button class="mini aimicr" type="button" onclick="aiMicr({{ im.id }}, this)">✨ AI read MICR</button>
+            <button class="mini aiclassify" type="button" onclick="aiClassify({{ im.id }}, this)">✨ AI classify type</button>
+            <div class="ai-hint" id="aihint-{{ im.id }}" hidden></div>
+            <label>Amount<input class="mono" name="amount" value="{{ im.amount or '0.00' }}"></label>
+            <button class="mini aiamount" type="button" onclick="aiAmount({{ im.id }}, this)"
+                    title="Use Claude vision to read the dollar amount off this document">✨ AI read amount</button>
+            <button class="mini save" type="submit">Save changes</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">Library is empty. Upload images or import a Check-List file above to begin.</p>
+  {% endif %}
+</section>
+
+<div id="lightbox" onclick="if(event.target===this)lbClose()">
+  <div class="lb-toolbar" onclick="event.stopPropagation()">
+    <span id="lb-side" class="lb-side">FRONT</span>
+    <button type="button" onclick="lbRotate('left')" title="Rotate left (saves)">↺</button>
+    <button type="button" onclick="lbRotate('right')" title="Rotate right (saves)">↻</button>
+    <button type="button" id="lb-flip" onclick="lbFlip()" title="Show other side">⇄ Flip</button>
+    <button type="button" onclick="lbZoom(1.25)" title="Zoom in">＋</button>
+    <button type="button" onclick="lbZoom(0.8)" title="Zoom out">－</button>
+    <button type="button" onclick="lbReset()" title="Fit to screen">⤢ Fit</button>
+    <button type="button" onclick="lbClose()" title="Close (Esc)">✕</button>
+  </div>
+  <img id="lightbox-img" alt="enlarged" onclick="event.stopPropagation()" draggable="false">
+</div>
+
+<footer>
+  <p>ImageToConfig · Check-List workspace · separate pool, plan and batch history from the main app.</p>
+</footer>
+
+<script>
+var CL_ALLOWED = {{ (rule.allowed|list)|tojson }};
+var COMPOSE_CFG = {{ compose_cfg|tojson }};
+var COMPOSE_COLS = [
+  {key:'check',     field:'check',     label:'Checks'},
+  {key:'statement', field:'statement', label:'Statements'},
+  {key:'fullpage',  field:'fullpage',  label:'Full Page'},
+  {key:'stub',      field:'stub',      label:'Stubs'},
+];
+var COMPOSE_STATE = (window.COMPOSE_CFG && COMPOSE_CFG.rows) ? COMPOSE_CFG.rows.map(function(r){
+  return {check:+r.check||0, statement:+r.statement||0, fullpage:+r.fullpage||0, stub:+r.stub||0};
+}) : [];
+
+function composeAllowed(){ return CL_ALLOWED; }
+function syncComposeStateFromDOM(){
+  var rowEls=document.querySelectorAll('#composeRows .compose-row');
+  rowEls.forEach(function(rowEl, i){
+    var o=COMPOSE_STATE[i] || {};
+    COMPOSE_COLS.forEach(function(c){
+      var inp=rowEl.querySelector('input[data-col="'+c.key+'"]');
+      if(inp && !inp.disabled) o[c.key]=parseInt(inp.value,10)||0;
+    });
+    COMPOSE_STATE[i]=o;
+  });
+}
+function renderComposeRows(){
+  syncComposeStateFromDOM();
+  var container=document.getElementById('composeRows');
+  if(!container) return;
+  var n=Math.max(0, parseInt(document.getElementById('nTxn').value,10)||0);
+  var perTxn=document.getElementById('perTxnToggle').checked;
+  document.getElementById('uniformField').value = perTxn ? '0' : '1';
+  var allowed=composeAllowed();
+  function cell(prefix, c, val){
+    var ok=allowed.indexOf(c.key) > -1;
+    return '<label class="ccell'+(ok?'':' disabled')+'">'+c.label+
+      '<input type="number" min="0" name="'+prefix+c.field+'" data-col="'+c.key+'" '+
+      'value="'+(ok?val:0)+'"'+(ok?'':' disabled')+'></label>';
+  }
+  var html='';
+  if(!perTxn){
+    var r=COMPOSE_STATE[0]||{};
+    html+='<div class="compose-row"><span class="row-lbl">Each transaction →</span>';
+    COMPOSE_COLS.forEach(function(c){ html+=cell('n_', c, r[c.key]||0); });
+    html+='</div>';
+  } else if(n===0){
+    html+='<p class="compose-hint">Set “How many transactions?” to add per-transaction rows.</p>';
+  } else {
+    for(var i=0;i<n;i++){
+      var ri=COMPOSE_STATE[i]||COMPOSE_STATE[0]||{};
+      html+='<div class="compose-row"><span class="row-lbl">Transaction '+(i+1)+'</span>';
+      COMPOSE_COLS.forEach(function(c){ html+=cell('row_', c, ri[c.key]||0); });
+      html+='</div>';
+    }
+  }
+  container.innerHTML=html;
+}
+function currentSide(id){
+  var i = document.querySelector('img[data-imgid="' + id + '"]');
+  return i ? i.dataset.side : 'front';
+}
+function flipSide(id){
+  var img = document.querySelector('img[data-imgid="' + id + '"]');
+  if (!img) return;
+  var next = img.dataset.side === 'front' ? 'back' : 'front';
+  img.dataset.side = next;
+  img.src = '/cl/preview/' + id + '/' + next + '?v=' + Date.now();
+  var lbl = document.querySelector('.side-label[data-imgid="' + id + '"]');
+  if (lbl) lbl.textContent = next.toUpperCase();
+}
+function rotateImg(id, dir){
+  var side = currentSide(id);
+  var body = new URLSearchParams({side: side, direction: dir});
+  fetch('/cl/image/' + id + '/rotate', {method: 'POST', body: body, headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ if (r.ok) bumpPreview(id, side); })
+    .catch(function(){});
+}
+function bumpPreview(id, side){
+  var v = 'v=' + Date.now();
+  var frag = '/cl/preview/' + id + '/' + side;
+  document.querySelectorAll('img').forEach(function(im){
+    var src = im.getAttribute('src') || '';
+    if (src.indexOf(frag) > -1) im.src = src.split('?')[0] + '?' + v;
+  });
+}
+function updateCard(id, type, micr){
+  var badge=document.querySelector('.tbadge[data-imgid="'+id+'"]');
+  if(badge){ badge.textContent=type; badge.className='tbadge '+type; }
+  var scan=document.querySelector('.gscan[data-imgid="'+id+'"]');
+  if(scan){
+    if(micr){ scan.textContent=micr; scan.className='gscan mono'; scan.title=micr; }
+    else if(type==='check'){ scan.textContent='⚠ no MICR — Edit to add'; scan.className='gscan mono missing'; scan.title='no MICR / scanline'; }
+    else { scan.textContent='—'; scan.className='gscan mono'; scan.title='no MICR / scanline'; }
+  }
+  var card=document.querySelector('img[data-imgid="'+id+'"]');
+  if(card){ var gc=card.closest('.gcard'); if(gc) gc.dataset.type=type; }
+}
+function saveEdit(form, id){
+  var btn=form.querySelector('.save'), old=btn?btn.textContent:'';
+  fetch(form.action, {method:'POST', body:new FormData(form)})
+    .then(function(r){ if(r.ok){
+      updateCard(id, form.item_type.value, (form.raw_micr.value||'').trim());
+      if(btn){ btn.textContent='Saved ✓'; setTimeout(function(){ btn.textContent=old; }, 1200); }
+    }})
+    .catch(function(){});
+  return false;
+}
+function rereadMicr(id, btn){
+  var old=btn.textContent; btn.textContent='reading…'; btn.disabled=true;
+  fetch('/cl/image/'+id+'/reread_micr', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var input=document.querySelector('input[name=raw_micr][data-imgid="'+id+'"]');
+      if(input){ input.value=d.micr||''; input.focus(); }
+      btn.textContent=d.micr ? 'read — verify & Save' : 'no MICR found';
+      setTimeout(function(){ btn.textContent=old; btn.disabled=false; }, 2500);
+    })
+    .catch(function(){ btn.textContent=old; btn.disabled=false; });
+}
+function toggleBatch(id, evt){
+  if (evt && evt.target && (evt.target.tagName === 'A' || evt.target.tagName === 'BUTTON' || evt.target.closest('form'))) return;
+  var detail = document.getElementById('bdetail-' + id);
+  var card   = document.getElementById('bcard-'   + id);
+  var btn    = card ? card.querySelector('.bcard-expand-btn') : null;
+  if (!detail) return;
+  var open = !detail.hidden;
+  detail.hidden = open;
+  if (card) card.classList.toggle('bcard-open', !open);
+  if (btn)  btn.textContent = open ? '▾' : '▴';
+}
+function renumberBatches(){
+  var cards=document.querySelectorAll('#batchGrid .bcard');
+  var total=cards.length;
+  cards.forEach(function(card, i){
+    var bid=card.querySelector('.bid');
+    if(bid) bid.textContent='#'+(total - i);
+  });
+}
+function toast(msg){
+  var t=document.getElementById('toast');
+  if(!t){ t=document.createElement('div'); t.id='toast'; document.body.appendChild(t); }
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer=setTimeout(function(){ t.classList.remove('show'); }, 2400);
+}
+function discardBatch(form, id){
+  var bcard=document.getElementById('bcard-'+id);
+  var bidEl=bcard ? bcard.querySelector('.bid') : null;
+  var shown=bidEl ? bidEl.textContent.trim() : ('#'+id);
+  if(!confirm('Discard batch '+shown+'? This deletes its generated files.')) return false;
+  var btn=form.querySelector('button');
+  if(btn){ btn.disabled=true; btn.textContent='…'; }
+  fetch(form.action, {method:'POST', headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ if(!r.ok) throw 0; return r; })
+    .then(function(){
+      if(bcard){
+        var grid=bcard.parentNode;
+        bcard.remove();
+        if(grid && !grid.querySelector('.bcard')){
+          var sec=grid.closest('.card');
+          grid.remove();
+          if(sec){
+            var p=document.createElement('p'); p.className='empty';
+            p.textContent='No batches generated yet.'; sec.appendChild(p);
+          }
+        } else {
+          renumberBatches();
+        }
+      }
+      toast('Batch '+shown+' discarded');
+    })
+    .catch(function(){ if(btn){ btn.disabled=false; btn.textContent='Discard batch'; }
+      alert('Could not discard batch '+shown+'.'); });
+  return false;
+}
+// ---- image viewer (rotate / flip side / zoom / pan) ----
+var LBst = {id:null, side:'front', hasBack:false, scale:1, tx:0, ty:0};
+function lbImg(){ return document.getElementById('lightbox-img'); }
+function lbApply(){
+  lbImg().style.transform = 'translate('+LBst.tx+'px,'+LBst.ty+'px) scale('+LBst.scale+')';
+}
+function lbRender(){
+  var img = lbImg();
+  img.src = '/cl/preview/' + LBst.id + '/' + LBst.side + '?v=' + Date.now();
+  var flip = document.getElementById('lb-flip');
+  if (flip) flip.style.display = LBst.hasBack ? '' : 'none';
+  var sl = document.getElementById('lb-side');
+  if (sl) sl.textContent = LBst.side.toUpperCase();
+  lbApply();
+}
+function openViewer(id, side, hasBack){
+  LBst = {id:id, side:side||'front', hasBack:!!hasBack, scale:1, tx:0, ty:0};
+  document.getElementById('lightbox').style.display = 'flex';
+  lbRender();
+}
+function lbZoom(f){ LBst.scale = Math.min(8, Math.max(0.2, LBst.scale*f)); lbApply(); }
+function lbReset(){ LBst.scale=1; LBst.tx=0; LBst.ty=0; lbApply(); }
+function lbFlip(){ if(!LBst.hasBack) return; LBst.side = LBst.side==='front'?'back':'front'; LBst.tx=0; LBst.ty=0; lbRender(); }
+function lbRotate(dir){
+  if(!LBst.id) return;
+  var body = new URLSearchParams({side: LBst.side, direction: dir});
+  fetch('/cl/image/'+LBst.id+'/rotate', {method:'POST', body:body, headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ if(r.ok){ lbRender(); bumpPreview(LBst.id, LBst.side); } })
+    .catch(function(){});
+}
+function lbClose(){ document.getElementById('lightbox').style.display='none'; }
+(function(){
+  var lb=document.getElementById('lightbox'); if(!lb) return;
+  lb.addEventListener('wheel', function(e){
+    if(lb.style.display==='none') return;
+    e.preventDefault(); lbZoom(e.deltaY<0 ? 1.12 : 0.9);
+  }, {passive:false});
+  var drag=null, img=lbImg();
+  img.addEventListener('mousedown', function(e){ drag={x:e.clientX,y:e.clientY,ox:LBst.tx,oy:LBst.ty}; e.preventDefault(); });
+  window.addEventListener('mousemove', function(e){
+    if(!drag) return;
+    LBst.tx = drag.ox + (e.clientX-drag.x); LBst.ty = drag.oy + (e.clientY-drag.y); lbApply();
+  });
+  window.addEventListener('mouseup', function(){ drag=null; });
+})();
+function toggleEdit(id){var e=document.getElementById('edit-'+id);e.hidden=!e.hidden;}
+function toggleSide(id){var e=document.getElementById('side-'+id);if(e)e.hidden=!e.hidden;}
+function ensureFlipButton(id){
+  var img=document.querySelector('img[data-imgid="'+id+'"]');
+  if(!img) return;
+  var thumb=img.closest('.gthumb');
+  if(!thumb) return;
+  var lbl=thumb.querySelector('.side-label[data-imgid="'+id+'"]');
+  if(!lbl){
+    lbl=document.createElement('span'); lbl.className='side-label';
+    lbl.setAttribute('data-imgid', id); lbl.textContent='FRONT';
+    thumb.appendChild(lbl);
+  }
+  var b=thumb.querySelector('.flipbtn');
+  if(!b){
+    b=document.createElement('button'); b.type='button';
+    b.setAttribute('data-imgid', id); thumb.appendChild(b);
+  }
+  b.className='flipbtn';
+  b.title='switch to other side'; b.textContent='⇄';
+  b.onclick=function(){ flipSide(id); };
+}
+function swapSides(form, id){
+  var btn=form.querySelector('.swap-btn'), old=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='…'; }
+  fetch(form.action, {method:'POST', headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ if(!r.ok) throw 0; })
+    .then(function(){
+      bumpPreview(id,'front'); bumpPreview(id,'back');
+      if(btn){ btn.textContent='Swapped ✓'; setTimeout(function(){ btn.textContent=old; btn.disabled=false; }, 1100); }
+    })
+    .catch(function(){ if(btn){ btn.textContent=old; btn.disabled=false; } alert('Could not swap sides.'); });
+  return false;
+}
+function attachSide(form, id){
+  if(!form.side_image.files.length){ alert('Choose an image file first.'); return false; }
+  var side=form.side.value, btn=form.querySelector('.attach-btn'), old=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='…'; }
+  fetch(form.action, {method:'POST', body:new FormData(form), headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ if(!r.ok) throw (r.status===409?'exists':0); return r; })
+    .then(function(){
+      if(side==='back'){ ensureFlipButton(id); }
+      else { bumpPreview(id,'front'); }
+      form.reset();
+      if(btn){ btn.textContent='Added ✓'; }
+      setTimeout(function(){
+        if(btn){ btn.textContent=old; btn.disabled=false; }
+        var panel=document.getElementById('side-'+id); if(panel) panel.hidden=true;
+      }, 1100);
+    })
+    .catch(function(e){
+      if(btn){ btn.textContent=old; btn.disabled=false; }
+      alert(e==='exists' ? 'That front image already exists in the library.'
+                         : 'Could not attach the image.');
+    });
+  return false;
+}
+function aiClassify(id, btn){
+  var old=btn.textContent; btn.textContent='thinking…'; btn.disabled=true;
+  var hint=document.getElementById('aihint-'+id);
+  fetch('/cl/image/'+id+'/ai_classify', {method:'POST', headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      btn.textContent=old; btn.disabled=false;
+      if(!d.ok){ if(hint){ hint.hidden=false; hint.className='ai-hint err'; hint.textContent=d.error; } return; }
+      var panel=document.getElementById('edit-'+id);
+      var sel=panel ? panel.querySelector('select[name=item_type]') : null;
+      if(sel){ sel.value=d.item_type; }
+      if(hint){ hint.hidden=false; hint.className='ai-hint';
+        var pct=d.confidence!=null ? ' ('+Math.round(d.confidence*100)+'% conf)' : '';
+        hint.textContent='Claude: '+d.item_type+pct+' — '+(d.reasoning||'')+'  → review & Save.'; }
+    })
+    .catch(function(){ btn.textContent=old; btn.disabled=false;
+      if(hint){ hint.hidden=false; hint.className='ai-hint err'; hint.textContent='AI request failed.'; } });
+}
+function aiMicr(id, btn){
+  var old=btn.textContent; btn.textContent='reading…'; btn.disabled=true;
+  fetch('/cl/image/'+id+'/ai_micr', {method:'POST', headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      btn.textContent=old; btn.disabled=false;
+      if(!d.ok){ alert(d.error); return; }
+      var input=document.querySelector('input[name=raw_micr][data-imgid="'+id+'"]');
+      if(input){ input.value=d.micr||''; }
+      var badge=document.querySelector('.tbadge[data-imgid="'+id+'"]');
+      var type=badge?badge.textContent:'check';
+      updateCard(id, type, d.micr||'');
+      if(!d.micr){ alert('Claude could not read a legible MICR from this image — add it manually.'); }
+    })
+    .catch(function(){ btn.textContent=old; btn.disabled=false; alert('AI MICR read failed.'); });
+}
+function aiFillMicr(btn){
+  if(!confirm('Use Claude to read + save the MICR for every check missing one? This sends those images to the Anthropic API.')) return;
+  var old=btn.textContent; btn.textContent='reading images…'; btn.disabled=true;
+  var msg=document.getElementById('aiFillMsg'); if(msg) msg.textContent='';
+  fetch('/cl/library/ai_fill_micr', {method:'POST', headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      btn.textContent=old; btn.disabled=false;
+      if(!d.ok){ if(msg) msg.textContent=d.error; return; }
+      (d.updated||[]).forEach(function(u){
+        var badge=document.querySelector('.tbadge[data-imgid="'+u.id+'"]');
+        var type=badge?badge.textContent:'check';
+        updateCard(u.id, type, u.micr);
+        var input=document.querySelector('input[name=raw_micr][data-imgid="'+u.id+'"]');
+        if(input) input.value=u.micr;
+      });
+      if(msg) msg.textContent='Filled '+d.filled+', '+d.failed+' still unreadable (add those manually).';
+    })
+    .catch(function(){ btn.textContent=old; btn.disabled=false; if(msg) msg.textContent='AI fill failed.'; });
+}
+function aiAmount(id, btn){
+  var old=btn.textContent; btn.textContent='reading…'; btn.disabled=true;
+  fetch('/cl/image/'+id+'/ai_amount', {method:'POST', headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      btn.textContent=old; btn.disabled=false;
+      if(!d.ok){ alert(d.error); return; }
+      var panel=document.getElementById('edit-'+id);
+      var input=panel?panel.querySelector('input[name=amount]'):null;
+      if(input && d.amount){ input.value=d.amount; }
+      if(!d.amount){ alert('Claude could not read a legible amount from this image — enter it manually.'); }
+    })
+    .catch(function(){ btn.textContent=old; btn.disabled=false; alert('AI amount read failed.'); });
+}
+function aiFillAmounts(btn){
+  if(!confirm('Use Claude to read + save the dollar amount for every check image that is missing one? This sends those images to the Anthropic API.')) return;
+  var old=btn.textContent; btn.textContent='reading images…'; btn.disabled=true;
+  var msg=document.getElementById('aiFillMsg'); if(msg) msg.textContent='';
+  fetch('/cl/library/ai_fill_amounts', {method:'POST', headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      btn.textContent=old; btn.disabled=false;
+      if(!d.ok){ if(msg) msg.textContent=d.error; return; }
+      (d.updated||[]).forEach(function(u){
+        var panel=document.getElementById('edit-'+u.id);
+        var input=panel?panel.querySelector('input[name=amount]'):null;
+        if(input) input.value=u.amount;
+      });
+      if(msg) msg.textContent='Filled '+d.filled+' amount(s) (total $'+d.total+'), '+d.failed+' unreadable. Re-add those documents to the plan to pick up new amounts.';
+    })
+    .catch(function(){ btn.textContent=old; btn.disabled=false; if(msg) msg.textContent='AI amount fill failed.'; });
+}
+function aiReview(id, btn){
+  var old=btn.textContent; btn.textContent='reviewing…'; btn.disabled=true;
+  var box=document.getElementById('aireview-'+id);
+  if(box){ box.hidden=false; box.className='ai-review'; box.textContent='Claude is reviewing the batch…'; }
+  fetch('/cl/batch/'+id+'/review', {method:'POST', headers:{'X-Requested-With':'fetch'}})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      btn.textContent=old; btn.disabled=false;
+      if(!box) return;
+      if(!d.ok){ box.className='ai-review err'; box.textContent=d.error; return; }
+      box.className='ai-review';
+      box.textContent='Review of .'+d.kind+':\n\n'+d.review;
+    })
+    .catch(function(){ btn.textContent=old; btn.disabled=false;
+      if(box){ box.className='ai-review err'; box.textContent='AI review failed.'; } });
+}
+function syncTargets(){
+  var sel=document.getElementById('targetTxn');
+  var v=sel?sel.value:'';
+  document.querySelectorAll('.target-ti').forEach(function(i){ i.value=v; });
+}
+function filterGallery(){var v=document.getElementById('typeFilter').value;
+  document.querySelectorAll('.gcard').forEach(function(c){c.style.display=(!v||c.dataset.type===v)?'':'none';});}
+function selectAllVisible(on){document.querySelectorAll('.gcard').forEach(function(c){
+  if(c.style.display==='none')return;var cb=c.querySelector('input[type=checkbox]');if(cb)cb.checked=on;});updateSelCount();}
+function updateSelCount(){var n=document.querySelectorAll('#library input[type=checkbox]:checked').length;
+  document.getElementById('selCount').textContent=n+' selected';}
+function autosaveState(form, which){
+  if(!form) return;
+  var d = new URLSearchParams();
+  Array.from(form.elements).forEach(function(el){
+    if(!el.name) return;
+    if(el.type === 'checkbox'){ d.set(el.name, el.checked ? 'on' : ''); }
+    else if(el.type !== 'submit' && el.type !== 'button'){ d.set(el.name, el.value); }
+  });
+  d.set('_form', which);
+  fetch('/cl/state/save', {method:'POST', body:d, headers:{'X-Requested-With':'fetch'}}).catch(function(){});
+}
+(function(){
+  var cf = document.getElementById('configForm');
+  if(cf) cf.addEventListener('change', function(){ autosaveState(cf, 'config'); });
+  var gf = document.getElementById('genFormat');
+  if(cf && gf) gf.addEventListener('change', function(){ autosaveState(cf, 'config'); });
+  syncTargets();
+})();
+document.addEventListener('keydown',function(e){if(e.key==='Escape')document.getElementById('lightbox').style.display='none';});
+(function(){
+  var KEY='cl_keepScrollY';
+  if('scrollRestoration' in history){ history.scrollRestoration='manual'; }
+  document.addEventListener('submit', function(e){
+    var f=e.target;
+    if(f && typeof f.action==='string' && f.action.indexOf('/plan/')>-1){
+      try{ sessionStorage.setItem(KEY, String(window.scrollY)); }catch(_){}
+    }
+  }, true);
+  function restore(){
+    try{
+      var y=sessionStorage.getItem(KEY);
+      if(y!==null){ window.scrollTo(0, parseInt(y,10)||0); }
+    }catch(_){}
+  }
+  restore();
+  window.addEventListener('load', function(){
+    restore();
+    try{ sessionStorage.removeItem(KEY); }catch(_){}
+  });
+})();
+renderComposeRows();
+</script>
+</body>
+</html>

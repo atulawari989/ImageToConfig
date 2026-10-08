@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ filename }} — Check-List</title>
+  <style>
+    :root { --navy: #0c0b12; --navy-2: #1c1a28; --ice: #efecf7; --ice-2: #c9c2de;
+            --accent: #a78bfa; --line: #322e44; --muted: #a29bb8;
+            --mono: "SFMono-Regular", "Cascadia Code", Consolas, "Courier New", monospace;
+            --sans: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: var(--sans); color: var(--ice);
+           background: var(--navy); }
+    .toolbar { display: flex; align-items: center; gap: 16px; padding: 12px 22px;
+               background: var(--navy-2); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .toolbar h1 { margin: 0; font-size: 15px; font-family: var(--mono); color: var(--accent); }
+    .toolbar a { color: var(--accent); text-decoration: none; font-size: 13px; }
+    .toolbar a:hover { text-decoration: underline; }
+    .line-nums { display: flex; }
+    .nums { padding: 12px 8px 12px 16px; text-align: right; color: var(--muted);
+            font-family: var(--mono); font-size: 12px; line-height: 1.6;
+            user-select: none; border-right: 1px solid var(--line);
+            background: rgba(28,26,42,.5); white-space: pre; }
+    .code { flex: 1; padding: 12px 16px; font-family: var(--mono); font-size: 12px;
+            line-height: 1.6; overflow-x: auto; white-space: pre;
+            color: var(--ice-2); background: rgba(12,11,18,.6); }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <h1>{{ filename }}</h1>
+    <a href="{{ url_for('cl.download', batch_id=batch_id, kind=kind) }}">Download</a>
+    <a href="{{ url_for('cl.index') }}">Back to Check-List page</a>
+  </div>
+  <div class="line-nums">
+    <div class="nums">{% for line in content.split('\n') %}{{ loop.index }}
+{% endfor %}</div>
+    <pre class="code">{{ content }}</pre>
+  </div>
+</body>
+</html>

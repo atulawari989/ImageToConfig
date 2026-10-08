@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — ImageToConfig</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="auth-wrap">
+  <div class="auth-card card">
+    <div class="auth-brand"><span class="logo">▚</span><h1>ImageToConfig</h1></div>
+    <p class="auth-tag">QA batch generator — sign in to continue</p>
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}
+    {% endwith %}
+    <form method="post" action="{{ url_for('login') }}" class="auth-form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <label>Username<input name="username" autofocus autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary auth-btn">Sign in</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Users — ImageToConfig admin</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">▚</span>
+    <div><h1>User accounts</h1><p class="tag">admin — create and manage users</p></div>
+  </div>
+  <div class="badges">
+    <span class="badge">{{ users|length }} users</span>
+    <a class="badge jump" href="{{ url_for('index') }}">← back to app</a>
+  </div>
+</header>
+
+{% with msgs = get_flashed_messages(with_categories=true) %}
+  {% if msgs %}<div class="flash-wrap">
+    {% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}
+  </div>{% endif %}
+{% endwith %}
+
+<section class="card" style="margin:0 28px 18px;">
+  <div class="card-head"><h2>Add a user</h2>
+    <p>New users can log in and keep their own private library &amp; batch history.</p></div>
+  <form action="{{ url_for('admin_users_add') }}" method="post" class="cl-upload">
+    <input type="text" name="username" placeholder="username" class="cl-note" required>
+    <input type="password" name="password" placeholder="password (min 6 chars)" class="cl-note" required>
+    <label class="perTxn-toggle"><input type="checkbox" name="is_admin"> admin</label>
+    <button type="submit" class="primary">Add user</button>
+  </form>
+</section>
+
+<section class="card" style="margin:0 28px 28px;">
+  <div class="card-head"><h2>Users</h2></div>
+  <div style="overflow-x:auto;">
+  <table class="hist">
+    <thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Created</th><th>Reset password</th><th></th></tr></thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td class="mono">{{ u.id }}</td>
+        <td>{{ u.username }}{% if u.id == current_user.id %} <span class="tpl-kind">you</span>{% endif %}</td>
+        <td>{% if u.is_admin %}<span class="tpl-learned">admin</span>{% else %}user{% endif %}</td>
+        <td>{{ u.created_at }}</td>
+        <td>
+          <form action="{{ url_for('admin_users_reset', uid=u.id) }}" method="post" class="cl-note-form">
+            <input type="password" name="password" placeholder="new password" class="cl-note" required>
+            <button type="submit" class="mini">Reset</button>
+          </form>
+        </td>
+        <td>
+          {% if u.id != current_user.id %}
+          <form action="{{ url_for('admin_users_delete', uid=u.id) }}" method="post" class="inline"
+                onsubmit="return confirm('Delete user {{ u.username }}? Their data stays in the DB but becomes inaccessible.')">
+            <button type="submit" class="mini del">🗑 Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+</body>
+</html>
